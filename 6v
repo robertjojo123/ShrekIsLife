@@ -1,0 +1,186 @@
+local modem = peripheral.find("modem")
+local monitor = peripheral.find("monitor")
+
+if not modem then
+    error("No wired modem found! Ensure a wired modem is attached.", 0)
+end
+if not monitor then
+    error("Attach a monitor!", 0)
+end
+
+local modemName = peripheral.getName(modem)
+if not rednet.isOpen(modemName) then
+    rednet.open(modemName)
+    print("[INFO] Rednet opened on modem: " .. modemName)
+end
+
+-- Ensure the computer has a label before proceeding
+while not os.getComputerLabel() do
+    print("[ERROR] This computer has no label! Set the label using:")
+    print("    label set comp0")
+    print("    label set comp1")
+    print("    (Set one of: comp0 to comp7)")
+    os.sleep(2)
+end
+
+-- Extract the section number from the label
+local section = tonumber(os.getComputerLabel():match("%d"))
+
+-- If the label was incorrectly set, show an error and stop
+if section == nil or section < 0 or section > 7 then
+    error("Invalid computer label! Must be 'comp0' to 'comp7'. Use 'label set compX'.", 0)
+end
+
+local fps = 10
+local partNumber = 1
+local nextPreloadPart = partNumber + 1
+local preloadedFrames = {}
+
+-- UPDATED BASE URL
+local baseURL = "https://raw.githubusercontent.com/robertjojo123/ShrekIsLife/refs/heads/main/vid_"
+
+-- Function to get the video file path
+local function getVideoPath(part, sec)
+    return "/vid_" .. tostring(part) .. "_s" .. tostring(sec) .. ".nfv"
+end
+
+-- Function to split strings
+local function split(inputstr, sep)
+    if not inputstr then return {} end
+    sep = sep or "%s"
+    local t = {}
+    for str in string.gmatch(inputstr, "([^"..sep.."]+)") do
+        table.insert(t, str)
+    end
+    return t
+end
+
+-- Download a video file
+local function downloadVideo(part, path)
+    local fileURL = baseURL .. tostring(part) .. "_s" .. tostring(section) .. ".nfv"
+    print("[Downloading] Fetching:", fileURL)
+    local response = http.get(fileURL)
+    if response then
+        local file = fs.open(path, "w")
+        if file then
+            file.write(response.readAll())
+            file.close()
+            print("[Download Complete] Saved:", fileURL)
+        else
+            print("[Error] Failed to write file:", path)
+        end
+        response.close()
+    else
+        print("[Download Failed] Unable to fetch:", fileURL)
+        return false
+    end
+    return true
+end
+
+-- Load video frames into memory
+local function loadVideoIntoMemory(path)
+    preloadedFrames = {}
+    if fs.exists(path) then
+        local file = fs.open(path, "r")
+        local videoData = file.readAll()
+        file.close()
+
+        local videoLines = split(videoData, "\n")
+        table.remove(videoLines, 1)  -- Remove resolution header
+
+        for i = 1, #videoLines do
+            table.insert(preloadedFrames, videoLines[i])
+        end
+        return true
+    else
+        print("[Error] Video file not found:", path)
+        return false
+    end
+end
+
+-- Render the assigned section of the frame
+local function drawFast(frameIndex)
+    local width, height = monitor.getSize()
+    local section_width = math.floor(width / 4)
+    local section_height = math.floor(height / 2)
+
+    local col = section % 4
+    local row = math.floor(section / 4)
+
+    local startX = (col * section_width) + 1
+    local startY = (row * section_height) + 1
+
+    if preloadedFrames[frameIndex] then
+        term.setCursorPos(startX, startY)
+        term.blit(preloadedFrames[frameIndex], preloadedFrames[frameIndex], preloadedFrames[frameIndex])
+    end
+end
+
+-- Background preloader task (downloads the next part while rendering)
+local function backgroundPreloader()
+    while true do
+        local nextVideoPath = getVideoPath(nextPreloadPart, section)
+        print("[Preloading] Downloading next part:", nextPreloadPart)
+        
+        if downloadVideo(nextPreloadPart, nextVideoPath) then
+            print("[Preloading] Download complete for:", nextVideoPath)
+        else
+            print("[Preloading] Failed to download next video part.")
+        end
+        
+        os.sleep(1)  -- Prevent excessive CPU usage
+    end
+end
+
+-- Frame rendering task
+local function frameRenderer()
+    while true do
+        local activeVideoPath = getVideoPath(partNumber, section)
+
+        -- Ensure the preloaded file exists before playing
+        while not fs.exists(activeVideoPath) do
+            print("[WARNING] Video file not ready, waiting...")
+            os.sleep(1)
+        end
+
+        -- Load video into memory
+        print("[Step 2] Loading video part into memory...")
+        if not loadVideoIntoMemory(activeVideoPath) then
+            print("[ERROR] Failed to load video part. Stopping playback.")
+            break
+        end
+
+        -- Play video frames
+        print("[Step 3] Playing video part:", partNumber)
+        local frameIndex = 1
+        while frameIndex <= 48 do  -- Assume each file contains 48 frames
+            local sender, msg = rednet.receive()
+            local cmd, receivedFrameIndex = msg:match("^(%S+) (%d+)$")
+
+            if cmd == "frame" then
+                receivedFrameIndex = tonumber(receivedFrameIndex)
+                if receivedFrameIndex == frameIndex then
+                    drawFast(frameIndex)
+                    frameIndex = frameIndex + 1
+                end
+            end
+        end
+
+        -- Delete the old video file after playback
+        print("[Step 4] Deleting old video part:", activeVideoPath)
+        if fs.exists(activeVideoPath) then
+            fs.delete(activeVideoPath)
+            print("[Cleanup] Deleted:", activeVideoPath)
+        else
+            print("[Warning] Tried to delete missing file:", activeVideoPath)
+        end
+
+        -- Swap to preloaded file & update part numbers
+        partNumber = nextPreloadPart
+        nextPreloadPart = partNumber + 1
+        print("[Loop] Moving to next video part:", partNumber)
+    end
+end
+
+-- Run rendering and preloading **SIMULTANEOUSLY**
+parallel.waitForAny(frameRenderer, backgroundPreloader)
