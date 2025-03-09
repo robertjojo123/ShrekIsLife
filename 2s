@@ -1,0 +1,42 @@
+local modem = peripheral.find("modem")
+if not modem then
+    error("No wired modem found on scheduler!", 0)
+end
+
+local modemName = peripheral.getName(modem)
+if not rednet.isOpen(modemName) then
+    rednet.open(modemName)
+    print("[INFO] Rednet opened on scheduler modem: " .. modemName)
+end
+
+print("[Scheduler] Waiting for Redstone signal to start...")
+while true do
+    if redstone.getInput("back") then  -- Adjust side as needed
+        print("[Scheduler] Redstone signal detected! Sending sync...")
+        rednet.broadcast("sync")
+        os.sleep(2) -- Allow time for all players to receive the sync
+        print("[Scheduler] Sync complete. Starting frame updates...")
+        break
+    end
+    os.sleep(0.1)
+end
+
+local fps = 10
+local frameTime = 1 / fps
+local frameIndex = 1
+
+while true do
+    local startTime = os.epoch("utc")
+
+    rednet.broadcast("frame " .. frameIndex)
+    print("[Scheduler] Sent frame:", frameIndex)
+
+    frameIndex = frameIndex + 1
+    if frameIndex > 48 then  -- Reset after 48 frames (or adjust for your needs)
+        frameIndex = 1
+    end
+
+    local elapsedTime = (os.epoch("utc") - startTime) / 1000
+    local sleepTime = frameTime - elapsedTime
+    if sleepTime > 0 then os.sleep(sleepTime) end
+end
